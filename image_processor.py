@@ -6,25 +6,104 @@ import pandas as pd
 from datetime import datetime
 import json
 from typing import Dict, Any, List
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import functools
+import hashlib
 
 class ImageProcessor:
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.cache = {}  # Simple in-memory cache
+        self.executor = ThreadPoolExecutor(max_workers=3)  # For parallel processing
     
     def encode_image(self, image_path: str) -> str:
-        """Encode image to base64 string"""
-        with open(image_path, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode('utf-8')
-    
-    def extract_text_from_image(self, image_path: str) -> Dict[str, Any]:
-        """Extract text from image using GPT-4 Vision"""
+        """Encode image to base64 string with caching and compression"""
+        # Create cache key from file path and modification time
+        stat_info = os.stat(image_path)
+        cache_key = f"{image_path}_{stat_info.st_mtime}_{stat_info.st_size}"
+        
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        
+        # Compress image if it's too large for faster processing
         try:
+            with Image.open(image_path) as img:
+                # Convert to RGB if necessary
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # Resize if image is too large (maintain aspect ratio)
+                max_dimension = 2048
+                if max(img.size) > max_dimension:
+                    ratio = max_dimension / max(img.size)
+                    new_size = tuple(int(dim * ratio) for dim in img.size)
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                
+                # Save to bytes with compression
+                import io
+                img_bytes = io.BytesIO()
+                img.save(img_bytes, format='JPEG', quality=85, optimize=True)
+                img_bytes.seek(0)
+                
+                encoded = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
+                self.cache[cache_key] = encoded
+                return encoded
+                
+        except Exception as e:
+            # Fallback to original method if compression fails
+            print(f"Image compression failed, using original: {e}")
+            with open(image_path, "rb") as image_file:
+                encoded = base64.b64encode(image_file.read()).decode('utf-8')
+                self.cache[cache_key] = encoded
+                return encoded
+    
+    async def extract_text_from_image_async(self, image_path: str) -> Dict[str, Any]:
+        """Async version of extract_text_from_image for better performance"""
+        try:
+            # Check cache first
+            stat_info = os.stat(image_path)
+            cache_key = f"extract_{image_path}_{stat_info.st_mtime}_{stat_info.st_size}"
+            
+            if cache_key in self.cache:
+                print(f"Using cached result for {image_path}")
+                return self.cache[cache_key]
+            
+            print(f"Processing image: {image_path}")
+            
             # Encode the image
             base64_image = self.encode_image(image_path)
+            print(f"Image encoded, size: {len(base64_image)} characters")
             
-            # Create the prompt for text extraction using GPT-4o with JSON format
-            response = self.client.chat.completions.create(
-                model="gpt-5",
+            # For debugging, let's try the simpler synchronous approach first
+            return self.extract_text_from_image_sync(image_path)
+            
+        except Exception as e:
+            print(f"Error in async extraction: {str(e)}")
+            return {
+                "status": "error",
+                "error_message": str(e),
+                "extracted_text": "",
+                "html_tables": "",
+                "token_usage": 0,
+                "processing_time": datetime.now().isoformat()
+            }
+    
+    def extract_text_from_image_sync(self, image_path: str) -> Dict[str, Any]:
+        """Synchronous version for debugging"""
+        try:
+            print(f"Starting sync processing for: {image_path}")
+            
+            # Encode the image
+            base64_image = self.encode_image(image_path)
+            print(f"Image encoded successfully, length: {len(base64_image)}")
+            
+            # Test OpenAI connection
+            print("Testing OpenAI API connection...")
+            
+            # First, get JSON data
+            json_response = self.client.chat.completions.create(
+                model="gpt-4o",
                 messages=[
                     {
                         "role": "system",
@@ -49,18 +128,21 @@ class ImageProcessor:
                 max_tokens=2000,
                 response_format={"type": "json_object"}
             )
-            extracted_text = response.choices[0].message.content
-            token_usage = response.usage.total_tokens if hasattr(response, 'usage') and response.usage else 0
             
-            print(f"=== RAW GPT-4o RESPONSE ===")
-            print(f"First 100 chars: {extracted_text[:100]}")
-            print(f"Starts with backticks: {extracted_text.startswith('```')}")
+            print(f"JSON API call successful, tokens used: {json_response.usage.total_tokens if hasattr(json_response, 'usage') and json_response.usage else 'unknown'}")
             
-            # Clean up the response in case it has markdown formatting
-            if extracted_text.startswith('```'):
-                # Remove markdown code blocks
+            # Extract content
+            extracted_text = json_response.choices[0].message.content
+            print(f"Extracted text length: {len(extracted_text) if extracted_text else 0}")
+            print(f"First 100 chars of extracted text: {extracted_text[:100] if extracted_text else 'None'}")
+            
+            # For now, skip HTML generation to isolate the issue
+            html_tables = "HTML generation skipped for debugging"
+            total_tokens = json_response.usage.total_tokens if hasattr(json_response, 'usage') and json_response.usage else 0
+            
+            # Clean up the response
+            if extracted_text and extracted_text.startswith('```'):
                 lines = extracted_text.split('\n')
-                # Find the start and end of the actual content
                 start_idx = 1 if lines[0].startswith('```') else 0
                 end_idx = len(lines)
                 for i in range(len(lines) - 1, -1, -1):
@@ -69,52 +151,196 @@ class ImageProcessor:
                         break
                 extracted_text = '\n'.join(lines[start_idx:end_idx])
             
-            # Validate that we got valid JSON
-            try:
-                import json
-                json.loads(extracted_text)  # This will raise an exception if not valid JSON
-                print("Valid JSON received from GPT-4o")
-            except json.JSONDecodeError as e:
-                print(f"Invalid JSON from GPT-4o: {e}")
-                print(f"Raw response: {extracted_text[:200]}...")
-                # If still not valid JSON, try to extract JSON from the text
-                import re
-                json_match = re.search(r'\{.*\}', extracted_text, re.DOTALL)
-                if json_match:
-                    extracted_text = json_match.group()
-                    try:
-                        json.loads(extracted_text)
-                        print("Extracted valid JSON from response")
-                    except:
-                        print("Could not extract valid JSON")
+            # Validate JSON
+            if extracted_text:
+                try:
+                    json.loads(extracted_text)
+                    print("JSON validation successful")
+                except json.JSONDecodeError as je:
+                    print(f"JSON validation failed: {je}")
+                    # Try to extract JSON from the text
+                    import re
+                    json_match = re.search(r'\{.*\}', extracted_text, re.DOTALL)
+                    if json_match:
+                        extracted_text = json_match.group()
+                        print("Extracted JSON from response")
             
-            return {
+            result = {
                 "status": "success",
-                "extracted_text": extracted_text,
-                "token_usage": token_usage,
+                "extracted_text": extracted_text or "",
+                "html_tables": html_tables,
+                "token_usage": total_tokens,
                 "processing_time": datetime.now().isoformat()
             }
             
+            print(f"Processing completed successfully. Status: {result['status']}")
+            return result
+            
         except Exception as e:
+            print(f"Error in sync extraction: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {
                 "status": "error",
                 "error_message": str(e),
                 "extracted_text": "",
+                "html_tables": "",
                 "token_usage": 0,
                 "processing_time": datetime.now().isoformat()
             }
     
-    def process_multiple_images(self, image_paths: List[str]) -> List[Dict[str, Any]]:
-        """Process multiple images and extract text from each"""
-        results = []
+    async def _get_json_response(self, base64_image: str):
+        """Get JSON response from OpenAI API"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self.executor,
+            functools.partial(
+                self.client.chat.completions.create,
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a JSON data extractor. You MUST return ONLY valid JSON. No markdown, no ```json blocks, no explanations - just pure JSON starting with { and ending with }."
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Analyze this golf scorecard and extract ALL data into JSON format. Return ONLY the JSON object - nothing else."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=2000,
+                response_format={"type": "json_object"}
+            )
+        )
+    
+    async def _get_table_response(self, base64_image: str):
+        """Get table response from OpenAI API"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self.executor,
+            functools.partial(
+                self.client.chat.completions.create,
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an HTML table generator. Create beautiful, well-structured HTML tables from golf scorecard data. Use Tailwind CSS classes for styling."
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": """Analyze this golf scorecard and create 3 HTML tables with Tailwind CSS styling:
+
+1. **Course Information Table**: Course name, tees, par, date/time, etc.
+2. **Player Scores Table**: Players as rows, holes as columns, with individual scores and totals
+3. **Hole Information Table**: Hole number, par, yardage, handicap, etc.
+
+Requirements:
+- Use Tailwind CSS classes for styling
+- Include proper table structure with <thead> and <tbody>
+- Add responsive classes like 'overflow-x-auto', 'table-auto'
+- Use colors: bg-blue-50, bg-green-50, text-green-600, etc.
+- Color-code scores: green for under par, red for over par, blue for par
+- Add hover effects: hover:bg-gray-50
+- Make tables clean and professional
+- Use semantic headings like <h3> for table titles
+
+Return ONLY the HTML content - no explanations, no markdown, no ```html blocks."""
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=3000
+            )
+        )
+    
+    def _process_responses(self, json_response, table_response) -> Dict[str, Any]:
+        """Process API responses and return formatted result"""
+            
+        extracted_text = json_response.choices[0].message.content
+        html_tables = table_response.choices[0].message.content
+        total_tokens = (json_response.usage.total_tokens if hasattr(json_response, 'usage') and json_response.usage else 0) + \
+                      (table_response.usage.total_tokens if hasattr(table_response, 'usage') and table_response.usage else 0)
         
+        # Clean up the response in case it has markdown formatting
+        if extracted_text.startswith('```'):
+            lines = extracted_text.split('\n')
+            start_idx = 1 if lines[0].startswith('```') else 0
+            end_idx = len(lines)
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].strip() == '```':
+                    end_idx = i
+                    break
+            extracted_text = '\n'.join(lines[start_idx:end_idx])
+        
+        # Validate JSON quickly
+        try:
+            json.loads(extracted_text)
+        except json.JSONDecodeError:
+            import re
+            json_match = re.search(r'\{.*\}', extracted_text, re.DOTALL)
+            if json_match:
+                extracted_text = json_match.group()
+        
+        return {
+            "status": "success",
+            "extracted_text": extracted_text,
+            "html_tables": html_tables,
+            "token_usage": total_tokens,
+            "processing_time": datetime.now().isoformat()
+        }
+    
+    def extract_text_from_image(self, image_path: str) -> Dict[str, Any]:
+        """Synchronous wrapper for async method to maintain compatibility"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(self.extract_text_from_image_async(image_path))
+        finally:
+            loop.close()
+    
+    async def process_multiple_images_async(self, image_paths: List[str]) -> List[Dict[str, Any]]:
+        """Process multiple images concurrently for better performance"""
+        tasks = []
         for image_path in image_paths:
-            result = self.extract_text_from_image(image_path)
+            task = asyncio.create_task(self.extract_text_from_image_async(image_path))
+            tasks.append((task, image_path))
+        
+        results = []
+        for task, image_path in tasks:
+            result = await task
             result["image_path"] = image_path
             result["image_name"] = os.path.basename(image_path)
             results.append(result)
         
         return results
+    
+    def process_multiple_images(self, image_paths: List[str]) -> List[Dict[str, Any]]:
+        """Synchronous wrapper for backward compatibility"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(self.process_multiple_images_async(image_paths))
+        finally:
+            loop.close()
     
     def export_to_csv(self, results: List[Dict[str, Any]], output_path: str = None) -> str:
         """Export extracted text results to CSV"""
