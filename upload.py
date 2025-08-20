@@ -12,6 +12,14 @@ router = APIRouter()
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+@router.get("/health")
+async def health_check():
+  return {
+      "status": "healthy",
+      "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+      "timestamp": datetime.now().isoformat()
+  }
+    
 @router.post("/upload-test")
 async def upload_file_test(file: UploadFile = File(...)):
     if not file:
