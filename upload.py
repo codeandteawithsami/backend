@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, status
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import shutil
 import json
 import time
@@ -10,44 +10,26 @@ from image_processor import ImageProcessor
 router = APIRouter()
 
 UPLOAD_DIR = "uploads"
-TEMP_DIR = "temp"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(TEMP_DIR, exist_ok=True)
 
 def cleanup_temp_files(max_age_hours: int = 24):
-    """Clean up temporary files older than max_age_hours"""
-    try:
-        current_time = datetime.now()
-        cutoff_time = current_time - timedelta(hours=max_age_hours)
-        
-        for filename in os.listdir(TEMP_DIR):
-            file_path = os.path.join(TEMP_DIR, filename)
-            if os.path.isfile(file_path):
-                file_time = datetime.fromtimestamp(os.path.getctime(file_path))
-                if file_time < cutoff_time:
-                    os.remove(file_path)
-                    print(f"Cleaned up old temp file: {filename}")
-    except Exception as e:
-        print(f"Error during temp cleanup: {e}")
-
-def get_temp_file_info():
-    """Get information about files in temp directory"""
-    files_info = []
-    try:
-        for filename in os.listdir(TEMP_DIR):
-            file_path = os.path.join(TEMP_DIR, filename)
-            if os.path.isfile(file_path):
-                stat_info = os.stat(file_path)
-                files_info.append({
-                    "filename": filename,
-                    "size": stat_info.st_size,
-                    "created": datetime.fromtimestamp(stat_info.st_ctime).isoformat(),
-                    "modified": datetime.fromtimestamp(stat_info.st_mtime).isoformat()
-                })
-    except Exception as e:
-        print(f"Error getting temp file info: {e}")
+    """Clean up old files in the uploads directory"""
+    if not os.path.exists(UPLOAD_DIR):
+        return
     
-    return files_info
+    current_time = time.time()
+    max_age_seconds = max_age_hours * 3600
+    
+    for filename in os.listdir(UPLOAD_DIR):
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        if os.path.isfile(file_path):
+            file_age = current_time - os.path.getctime(file_path)
+            if file_age > max_age_seconds:
+                try:
+                    os.remove(file_path)
+                    print(f"Removed old temp file: {filename}")
+                except Exception as e:
+                    print(f"Failed to remove {filename}: {e}")
 
 @router.post("/upload-test")
 async def upload_file_test(file: UploadFile = File(...)):
@@ -61,7 +43,7 @@ async def upload_file_test(file: UploadFile = File(...)):
     # Create unique filename without user info for testing
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"test_{timestamp}_{file.filename}"
-    file_path = os.path.join(TEMP_DIR, filename)
+    file_path = os.path.join(UPLOAD_DIR, filename)
     
     try:
         # Step 1: Save file
@@ -131,10 +113,10 @@ async def upload_image(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff')):
         raise HTTPException(status_code=400, detail="Only image files are allowed")
     
-    # Create unique filename in temp directory
+    # Create unique filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"image_{timestamp}_{file.filename}"
-    file_path = os.path.join(TEMP_DIR, filename)
+    file_path = os.path.join(UPLOAD_DIR, filename)
     
     try:
         # Save file
@@ -146,7 +128,6 @@ async def upload_image(file: UploadFile = File(...)):
         start_time = time.time()
         
         try:
-            # Use sync processing to avoid event loop conflicts
             processing_result = processor.extract_text_from_image_sync(file_path)
             processing_time = time.time() - start_time
             
@@ -181,7 +162,7 @@ async def upload_image(file: UploadFile = File(...)):
 
 @router.post("/process-scorecards")
 async def process_scorecards():
-    """Process all scorecard images in the Scorecards folder with async processing"""
+    """Process all scorecard images in the Scorecards folder"""
     scorecards_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Scorecards")
     
     if not os.path.exists(scorecards_path):
@@ -191,39 +172,12 @@ async def process_scorecards():
         processor = ImageProcessor()
         start_time = time.time()
         
-        # Get all image files
-        image_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff')
-        image_paths = []
-        
-        for filename in os.listdir(scorecards_path):
-            if filename.lower().endswith(image_extensions):
-                image_paths.append(os.path.join(scorecards_path, filename))
-        
-        if not image_paths:
-            raise HTTPException(status_code=404, detail="No image files found in the Scorecards folder")
-        
-        # Process all images using sync method to avoid event loop conflicts
-        results = processor.process_multiple_images(image_paths)
-        
-        # Export to CSV
-        csv_path = processor.export_to_csv(results)
-        
-        # Calculate summary statistics
-        successful_extractions = len([r for r in results if r["status"] == "success"])
-        total_tokens = sum(r.get("token_usage", 0) for r in results)
-        
+        result = processor.process_scorecard_folder(scorecards_path)
         processing_time = time.time() - start_time
         
-        return {
-            "status": "success",
-            "total_images": len(image_paths),
-            "successful_extractions": successful_extractions,
-            "failed_extractions": len(image_paths) - successful_extractions,
-            "total_tokens_used": total_tokens,
-            "csv_output_path": csv_path,
-            "total_processing_time": processing_time,
-            "results": results
-        }
+        result["total_processing_time"] = processing_time
+        
+        return result
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing scorecards: {str(e)}")
@@ -251,14 +205,14 @@ async def debug_upload(file: UploadFile = File(...)):
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"debug_{timestamp}_{file.filename}"
-    file_path = os.path.join(TEMP_DIR, filename)
+    file_path = os.path.join(UPLOAD_DIR, filename)
     
     try:
         # Save file
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        # Process with debug output using sync method
+        # Process with debug output
         processor = ImageProcessor()
         result = processor.extract_text_from_image_sync(file_path)
         
@@ -279,74 +233,3 @@ async def debug_upload(file: UploadFile = File(...)):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Debug failed: {str(e)}")
-
-@router.get("/temp-files")
-async def list_temp_files():
-    """List all files in the temp directory"""
-    try:
-        files_info = get_temp_file_info()
-        return {
-            "temp_directory": TEMP_DIR,
-            "total_files": len(files_info),
-            "files": files_info
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error listing temp files: {str(e)}")
-
-@router.post("/cleanup-temp")
-async def cleanup_temp():
-    """Clean up old temporary files (older than 24 hours)"""
-    try:
-        files_before = len(get_temp_file_info())
-        cleanup_temp_files(max_age_hours=24)
-        files_after = len(get_temp_file_info())
-        
-        return {
-            "message": "Temp cleanup completed",
-            "files_before": files_before,
-            "files_after": files_after,
-            "files_removed": files_before - files_after
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error during cleanup: {str(e)}")
-
-@router.delete("/temp-files/clear-all")
-async def clear_all_temp_files():
-    """Clear all files from the temp directory"""
-    try:
-        files_info = get_temp_file_info()
-        files_count = len(files_info)
-        
-        for file_info in files_info:
-            file_path = os.path.join(TEMP_DIR, file_info["filename"])
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        
-        return {
-            "message": f"Cleared all temp files",
-            "files_removed": files_count
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error clearing temp files: {str(e)}")
-
-@router.delete("/temp-files/{filename}")
-async def delete_temp_file(filename: str):
-    """Delete a specific file from the temp directory"""
-    try:
-        file_path = os.path.join(TEMP_DIR, filename)
-        
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="File not found")
-        
-        if not os.path.isfile(file_path):
-            raise HTTPException(status_code=400, detail="Path is not a file")
-        
-        os.remove(file_path)
-        
-        return {
-            "message": f"File '{filename}' deleted successfully"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
