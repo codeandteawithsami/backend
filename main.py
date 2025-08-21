@@ -12,11 +12,18 @@ async def startup_event():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000","https://frontend-oqew8uoyr-codeandteawithsamis-projects.vercel.app"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "https://frontend-oqew8uoyr-codeandteawithsamis-projects.vercel.app",
+        "https://frontend-femz2n38v-codeandteawithsamis-projects.vercel.app",  # add this
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 app.include_router(upload_router, tags=["upload"])
 
