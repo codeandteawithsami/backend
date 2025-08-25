@@ -4,7 +4,6 @@ from datetime import datetime
 import shutil
 import json
 import time
-from pdf_processor import ResumeProcessor
 from image_processor import ImageProcessor
 
 router = APIRouter()
@@ -30,62 +29,6 @@ def cleanup_temp_files(max_age_hours: int = 24):
                     print(f"Removed old temp file: {filename}")
                 except Exception as e:
                     print(f"Failed to remove {filename}: {e}")
-
-@router.post("/upload-test")
-async def upload_file_test(file: UploadFile = File(...)):
-    if not file:
-        raise HTTPException(status_code=400, detail="No file uploaded")
-    
-    # Validate file type
-    if not file.filename.lower().endswith(('.pdf', '.txt', '.doc', '.docx')):
-        raise HTTPException(status_code=400, detail="Only PDF, TXT, DOC, DOCX files are allowed")
-    
-    # Create unique filename without user info for testing
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"test_{timestamp}_{file.filename}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    
-    try:
-        # Step 1: Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Step 2: Process resume with OpenAI (you need to set OPENAI_API_KEY environment variable)
-        processor = ResumeProcessor()
-        start_time = time.time()
-        
-        try:
-            processing_result = processor.process_resume(file_path)
-            processing_time = time.time() - start_time
-            
-            return {
-                "message": "Resume uploaded and parsed successfully",
-                "filename": filename,
-                "original_filename": file.filename,
-                "size": file.size,
-                "upload_time": datetime.now().isoformat(),
-                "processing_time": processing_time,
-                "resume_data": processing_result.get("parsed_content", {}),
-                "text_length": processing_result.get("text_length", 0),
-                "parsing_status": processing_result.get("processing_status", "unknown")
-            }
-            
-        except Exception as parsing_error:
-            return {
-                "message": "Resume uploaded but parsing failed",
-                "filename": filename,
-                "original_filename": file.filename,
-                "size": file.size,
-                "upload_time": datetime.now().isoformat(),
-                "parsing_error": str(parsing_error),
-                "parsing_status": "error"
-            }
-    
-    except Exception as e:
-        # Clean up file if upload fails
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        raise HTTPException(status_code=500, detail=f"Could not upload file: {str(e)}")
 
 @router.get("/files")
 async def list_files():

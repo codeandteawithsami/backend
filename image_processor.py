@@ -10,6 +10,9 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import functools
 import hashlib
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class ImageProcessor:
     def __init__(self):
@@ -107,14 +110,105 @@ class ImageProcessor:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a JSON data extractor. You MUST return ONLY valid JSON. No markdown, no ```json blocks, no explanations - just pure JSON starting with { and ending with }."
+                        "content": """
+                            You are a golf scorecard text extraction expert. Analyze this image and extract ALL visible text, numbers, and data into structured JSON format.
+
+                            CRITICAL EXTRACTION RULES:
+                            1. Read EXACTLY as it appears - LEFT to RIGHT, TOP to BOTTOM
+                            2. Extract HANDWRITTEN and PRINTED text
+                            3. Handle different scorecard types: player scorecards, course info cards, tournament cards
+                            4. Read ALL player names exactly as written
+                            5. Extract ALL hole numbers, par values, and scores exactly as shown
+                            6. Include ALL yardage information for every tee color
+                            7. Capture tournament names, dates, and competition details
+
+                            Return ONLY this JSON structure with NO markdown formatting:
+                            {
+                                "cardType": "scorecard",
+                                "courseInfo": {
+                                    "name": "Course Name",
+                                    "location": "City, State", 
+                                    "tournament": "Tournament Name if any",
+                                    "date": "Date if shown",
+                                    "time": "Tee time if shown"
+                                },
+                                "holes": [
+                                    {
+                                        "holeNumber": 1,
+                                        "par": 4,
+                                        "yardage": {
+                                            "black": 425,
+                                            "blue": 390,
+                                            "white": 350,
+                                            "gold": 320,
+                                            "red": 280
+                                        },
+                                        "handicap": {
+                                            "men": 7,
+                                            "women": 9
+                                        }
+                                    }
+                                ],
+                                "players": [
+                                    {
+                                        "name": "Exact Name as Written",
+                                        "tee": "Tee Color",
+                                        "handicap": 12,
+                                        "scores": [
+                                            {
+                                                "hole": 1,
+                                                "score": 4,
+                                                "putts": 2
+                                            }
+                                        ],
+                                        "totals": {
+                                            "front9": 42,
+                                            "back9": 44,
+                                            "total": 86
+                                        }
+                                    }
+                                ],
+                                "teeBoxes": [
+                                    {
+                                        "name": "Black",
+                                        "totalYardage": {
+                                            "front9": 3592,
+                                            "back9": 3450,
+                                            "total": 7042
+                                        }
+                                    }
+                                ],
+                                "totals": {
+                                    "par": {
+                                        "front9": 36,
+                                        "back9": 36,
+                                        "total": 72
+                                    }
+                                },
+                                "competitionInfo": {
+                                    "round": "Round number",
+                                    "flight": "Flight info",
+                                    "division": "Men's/Women's Championship etc"
+                                }
+                            }
+
+                            SPECIFIC INSTRUCTIONS:
+                            - Extract names EXACTLY: "Berndt, Phil" not "Phil Berndt"
+                            - Read handwritten scores carefully: distinguish 4 from 9, 6 from 5, etc.
+                            - Include ALL visible yardages for every tee color
+                            - Capture marker signatures, attestation info if present
+                            - Extract hole-by-hole scores in the exact order shown
+                            - Include tournament/competition details prominently displayed
+                            - Handle both 9-hole and 18-hole layouts
+                            - Extract course rating, slope, and handicap information
+                            """
                     },
                     {
                         "role": "user",
                         "content": [
                             {
                                 "type": "text",
-                                "text": "Analyze this golf scorecard and extract ALL data into JSON format. Return ONLY the JSON object - nothing else."
+                                "text": "Analyze this golf scorecard"
                             },
                             {
                                 "type": "image_url",
@@ -125,7 +219,7 @@ class ImageProcessor:
                         ]
                     }
                 ],
-                max_tokens=2000,
+                max_tokens=4000,
                 response_format={"type": "json_object"}
             )
             
@@ -140,34 +234,38 @@ class ImageProcessor:
             html_tables = "HTML generation skipped for debugging"
             total_tokens = json_response.usage.total_tokens if hasattr(json_response, 'usage') and json_response.usage else 0
             
-            # Clean up the response
-            if extracted_text and extracted_text.startswith('```'):
-                lines = extracted_text.split('\n')
-                start_idx = 1 if lines[0].startswith('```') else 0
-                end_idx = len(lines)
-                for i in range(len(lines) - 1, -1, -1):
-                    if lines[i].strip() == '```':
-                        end_idx = i
-                        break
-                extracted_text = '\n'.join(lines[start_idx:end_idx])
-            
-            # Validate JSON
+            # Clean and validate JSON
             if extracted_text:
+                # Clean the response of common formatting issues
+                extracted_text = self._clean_json_response(extracted_text)
+                
                 try:
+                    # Validate JSON
                     json.loads(extracted_text)
                     print("JSON validation successful")
                 except json.JSONDecodeError as je:
                     print(f"JSON validation failed: {je}")
-                    # Try to extract JSON from the text
-                    import re
-                    json_match = re.search(r'\{.*\}', extracted_text, re.DOTALL)
-                    if json_match:
-                        extracted_text = json_match.group()
-                        print("Extracted JSON from response")
+                    print(f"Raw response: {extracted_text[:200]}...")
+                    
+                    # Try multiple cleaning strategies
+                    cleaned_text = self._extract_and_fix_json(extracted_text)
+                    if cleaned_text:
+                        extracted_text = cleaned_text
+                        print("Successfully fixed JSON")
+                    else:
+                        print("Could not fix JSON, returning error")
+                        return {
+                            "status": "error",
+                            "error_message": f"Invalid JSON returned from AI: {str(je)}",
+                            "extracted_text": f'{{"error": "Failed to parse response", "raw_response": "{extracted_text[:100]}..."}}',
+                            "html_tables": "",
+                            "token_usage": total_tokens,
+                            "processing_time": datetime.now().isoformat()
+                        }
             
             result = {
                 "status": "success",
-                "extracted_text": extracted_text or "",
+                "extracted_text": extracted_text or '{"error": "No text extracted", "cardType": "error"}',
                 "html_tables": html_tables,
                 "token_usage": total_tokens,
                 "processing_time": datetime.now().isoformat()
@@ -183,7 +281,7 @@ class ImageProcessor:
             return {
                 "status": "error",
                 "error_message": str(e),
-                "extracted_text": "",
+                "extracted_text": f'{{"error": "Processing failed", "message": "{str(e)}", "cardType": "error"}}',
                 "html_tables": "",
                 "token_usage": 0,
                 "processing_time": datetime.now().isoformat()
@@ -401,3 +499,78 @@ Return ONLY the HTML content - no explanations, no markdown, no ```html blocks."
             "csv_output_path": csv_path,
             "results": results
         }
+    
+    def _clean_json_response(self, text: str) -> str:
+        """Clean common JSON formatting issues from AI response"""
+        if not text:
+            return text
+            
+        # Remove markdown code blocks
+        text = text.strip()
+        if text.startswith('```json'):
+            text = text[7:]
+        elif text.startswith('```'):
+            text = text[3:]
+            
+        if text.endswith('```'):
+            text = text[:-3]
+            
+        # Remove any text before the first {
+        start_idx = text.find('{')
+        if start_idx > 0:
+            text = text[start_idx:]
+            
+        # Remove any text after the last }
+        end_idx = text.rfind('}') + 1
+        if end_idx > 0:
+            text = text[:end_idx]
+            
+        return text.strip()
+    
+    def _extract_and_fix_json(self, text: str) -> str:
+        """Try multiple strategies to extract and fix JSON"""
+        import re
+        
+        # Strategy 1: Find JSON object with regex
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            json_text = json_match.group()
+            try:
+                json.loads(json_text)
+                return json_text
+            except json.JSONDecodeError:
+                pass
+        
+        # Strategy 2: Try to fix common JSON issues
+        try:
+            # Remove trailing commas
+            fixed_text = re.sub(r',\s*([}\]])', r'\1', text)
+            # Fix single quotes to double quotes
+            fixed_text = re.sub(r"'", '"', fixed_text)
+            # Fix missing quotes around keys
+            fixed_text = re.sub(r'(\w+):', r'"\1":', fixed_text)
+            
+            # Try to fix incomplete JSON by ensuring it ends properly
+            if fixed_text.count('{') > fixed_text.count('}'):
+                # Add missing closing braces
+                missing_braces = fixed_text.count('{') - fixed_text.count('}')
+                fixed_text += '}' * missing_braces
+            
+            if fixed_text.count('[') > fixed_text.count(']'):
+                # Add missing closing brackets
+                missing_brackets = fixed_text.count('[') - fixed_text.count(']')
+                fixed_text += ']' * missing_brackets
+            
+            json.loads(fixed_text)
+            return fixed_text
+        except json.JSONDecodeError:
+            pass
+            
+        # Strategy 3: Return minimal valid JSON for errors
+        try:
+            # Don't truncate - keep full text for debugging
+            escaped_text = text.replace('"', '\\"').replace('\n', '\\n')
+            return f'{{"error": "Could not parse scorecard", "cardType": "error", "extractedText": "{escaped_text}"}}'
+        except:
+            return '{"error": "Complete parsing failure", "cardType": "error"}'
+    
