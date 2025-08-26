@@ -86,10 +86,11 @@ class ImageProcessor:
             return {
                 "status": "error",
                 "error_message": str(e),
-                "extracted_text": "",
+                "extracted_text": '{"error": "Async processing failed", "cardType": "error", "confidence": 0}',
                 "html_tables": "",
                 "token_usage": 0,
-                "processing_time": datetime.now().isoformat()
+                "processing_time": datetime.now().isoformat(),
+                "confidence": 0
             }
     
     def extract_text_from_image_sync(self, image_path: str) -> Dict[str, Any]:
@@ -106,7 +107,7 @@ class ImageProcessor:
             
             # First, get JSON data
             json_response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4.1",
                 messages=[
                     {
                         "role": "system",
@@ -124,6 +125,7 @@ class ImageProcessor:
 
                             Return ONLY this JSON structure with NO markdown formatting:
                             {
+                                "confidence": 85,
                                 "cardType": "scorecard",
                                 "courseInfo": {
                                     "name": "Course Name",
@@ -201,6 +203,13 @@ class ImageProcessor:
                             - Include tournament/competition details prominently displayed
                             - Handle both 9-hole and 18-hole layouts
                             - Extract course rating, slope, and handicap information
+                            - CONFIDENCE: Set confidence (0-100) based on image quality, handwriting legibility, and data completeness
+                              * 90-100: Crystal clear image, all text easily readable, complete scorecard data
+                              * 70-89: Good quality, most text clear, minor uncertainty in 1-2 elements
+                              * 50-69: Fair quality, some unclear handwriting or partial data
+                              * 30-49: Poor quality, significant uncertainty in multiple elements
+                              * 10-29: Very poor quality, mostly guesswork
+                              * 0-9: Unreadable or no scorecard detected
                             """
                     },
                     {
@@ -240,9 +249,10 @@ class ImageProcessor:
                 extracted_text = self._clean_json_response(extracted_text)
                 
                 try:
-                    # Validate JSON
-                    json.loads(extracted_text)
-                    print("JSON validation successful")
+                    # Validate JSON and extract confidence
+                    parsed_json = json.loads(extracted_text)
+                    confidence = parsed_json.get('confidence', 0)
+                    print(f"JSON validation successful, confidence: {confidence}%")
                 except json.JSONDecodeError as je:
                     print(f"JSON validation failed: {je}")
                     print(f"Raw response: {extracted_text[:200]}...")
@@ -251,24 +261,39 @@ class ImageProcessor:
                     cleaned_text = self._extract_and_fix_json(extracted_text)
                     if cleaned_text:
                         extracted_text = cleaned_text
-                        print("Successfully fixed JSON")
+                        try:
+                            parsed_json = json.loads(cleaned_text)
+                            confidence = parsed_json.get('confidence', 0)
+                            print(f"Successfully fixed JSON, confidence: {confidence}%")
+                        except:
+                            confidence = 0
+                            print("Successfully fixed JSON")
                     else:
                         print("Could not fix JSON, returning error")
                         return {
                             "status": "error",
                             "error_message": f"Invalid JSON returned from AI: {str(je)}",
-                            "extracted_text": f'{{"error": "Failed to parse response", "raw_response": "{extracted_text[:100]}..."}}',
+                            "extracted_text": f'{{"error": "Failed to parse response", "raw_response": "{extracted_text[:100]}...", "confidence": 0}}',
                             "html_tables": "",
                             "token_usage": total_tokens,
-                            "processing_time": datetime.now().isoformat()
+                            "processing_time": datetime.now().isoformat(),
+                            "confidence": 0
                         }
+            
+            # Extract confidence from parsed JSON for the response
+            try:
+                parsed_result = json.loads(extracted_text) if extracted_text else {}
+                result_confidence = parsed_result.get('confidence', 0)
+            except:
+                result_confidence = 0
             
             result = {
                 "status": "success",
-                "extracted_text": extracted_text or '{"error": "No text extracted", "cardType": "error"}',
+                "extracted_text": extracted_text or '{"error": "No text extracted", "cardType": "error", "confidence": 0}',
                 "html_tables": html_tables,
                 "token_usage": total_tokens,
-                "processing_time": datetime.now().isoformat()
+                "processing_time": datetime.now().isoformat(),
+                "confidence": result_confidence
             }
             
             print(f"Processing completed successfully. Status: {result['status']}")
@@ -281,10 +306,11 @@ class ImageProcessor:
             return {
                 "status": "error",
                 "error_message": str(e),
-                "extracted_text": f'{{"error": "Processing failed", "message": "{str(e)}", "cardType": "error"}}',
+                "extracted_text": f'{{"error": "Processing failed", "message": "{str(e)}", "cardType": "error", "confidence": 0}}',
                 "html_tables": "",
                 "token_usage": 0,
-                "processing_time": datetime.now().isoformat()
+                "processing_time": datetime.now().isoformat(),
+                "confidence": 0
             }
     
     async def _get_json_response(self, base64_image: str):
