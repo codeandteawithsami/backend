@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import functools
 import hashlib
 from dotenv import load_dotenv
+from utils import detect_data
 
 load_dotenv()
 
@@ -31,11 +32,19 @@ class ImageProcessor:
         
         # Compress image if it's too large for faster processing
         try:
-            with Image.open(image_path) as img:
+            # First, try to detect and crop the main object using YOLO
+            print("Detection Image using YOLO model...")
+            detections = detect_data(image_path, output_dir="temp_outputs")
+            if detections["crop_image"]:
+                img_path_to_encode = detections["crop_image"]
+            else:
+                img_path_to_encode = image_path
+            print(f"Image to encode: {img_path_to_encode}")
+            with Image.open(img_path_to_encode) as img:
                 # Convert to RGB if necessary
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
-                
+
                 # Resize if image is too large (maintain aspect ratio)
                 max_dimension = 2048
                 if max(img.size) > max_dimension:
@@ -112,16 +121,24 @@ class ImageProcessor:
                     {
                         "role": "system",
                         "content": """
-                            You are a golf scorecard text extraction expert. Analyze this image and extract ALL visible text, numbers, and data into structured JSON format.
+                            You are a COMPREHENSIVE golf scorecard data extraction expert. Your mission is to extract EVERY SINGLE piece of visible data from this scorecard image with COMPLETE thoroughness.
 
-                            CRITICAL EXTRACTION RULES:
-                            1. Read EXACTLY as it appears - LEFT to RIGHT, TOP to BOTTOM
-                            2. Extract HANDWRITTEN and PRINTED text
-                            3. Handle different scorecard types: player scorecards, course info cards, tournament cards
-                            4. Read ALL player names exactly as written
-                            5. Extract ALL hole numbers, par values, and scores exactly as shown
-                            6. Include ALL yardage information for every tee color
-                            7. Capture tournament names, dates, and competition details
+                            COMPREHENSIVE EXTRACTION RULES - MISS NOTHING:
+                            1. SYSTEMATIC SCAN: Read EXACTLY as it appears - LEFT to RIGHT, TOP to BOTTOM
+                            2. EXTRACT EVERYTHING: HANDWRITTEN and PRINTED text, numbers, symbols, marks
+                            3. SCORECARD TYPES: Handle player scorecards, course info cards, tournament cards, practice rounds
+                            4. PLAYER DATA: Read ALL player names, signatures, handicaps - check EVERY row for names
+                            5. SCORE DATA: Extract ALL hole numbers, par values, scores - scan EVERY cell, EVERY column
+                            6. COURSE DATA: Include ALL yardage information for EVERY tee color, ratings, slopes
+                            7. EVENT DATA: Capture tournament names, dates, times, competition details, flight info
+                            8. **SCORE ROWS WITHOUT NAMES**: If ANY row contains score numbers but NO player name:
+                               - MANDATORY: Still extract ALL the score data from that row
+                               - Look at previous row - if it has a player name, use that name (continuation)
+                               - If no previous player name exists, set player name to "NONE"
+                               - NEVER skip rows with score data - scores are priority
+                               - Document which rows had missing names
+                            9. **LOCATION TRACKING**: Note the general area/position where key data was found
+                            10. **COMPLETENESS CHECK**: Scan entire image - headers, footers, margins, corners
 
                             Return ONLY this JSON structure with NO markdown formatting:
                             {
@@ -194,15 +211,20 @@ class ImageProcessor:
                                 }
                             }
 
-                            SPECIFIC INSTRUCTIONS:
-                            - Extract names EXACTLY: "Berndt, Phil" not "Phil Berndt"
-                            - Read handwritten scores carefully: distinguish 4 from 9, 6 from 5, etc.
-                            - Include ALL visible yardages for every tee color
-                            - Capture marker signatures, attestation info if present
-                            - Extract hole-by-hole scores in the exact order shown
-                            - Include tournament/competition details prominently displayed
-                            - Handle both 9-hole and 18-hole layouts
-                            - Extract course rating, slope, and handicap information
+                            COMPREHENSIVE EXTRACTION INSTRUCTIONS:
+                            - **NAMES**: Extract EXACTLY as written: "Berndt, Phil" not "Phil Berndt"
+                            - **HANDWRITING**: Read carefully: distinguish 4 from 9, 6 from 5, 1 from 7, 8 from 3
+                            - **YARDAGES**: Include ALL visible yardages for EVERY tee color (Black, Blue, White, Gold, Red, etc.)
+                            - **SIGNATURES**: Capture marker signatures, player attestations, official marks
+                            - **SCORES**: Extract hole-by-hole scores in exact order - front 9, back 9, totals
+                            - **TOURNAMENT**: Include competition details, round numbers, flight info, divisions
+                            - **LAYOUTS**: Handle 9-hole, 18-hole, executive courses, par-3 courses
+                            - **RATINGS**: Extract course rating, slope, handicap indexes for all tees
+                            - **DATES/TIMES**: Capture any date stamps, tee times, round information
+                            - **ADDITIONAL DATA**: Weather conditions, notes, special markings, logos
+                            - **ROW SCANNING**: Check every row for data - even if it looks empty
+                            - **CELL COMPLETENESS**: Extract partial numbers, unclear text with best guess
+                            - **LOCATION NOTES**: Mention if data comes from top/bottom/left/right of scorecard
                             - CONFIDENCE: Set confidence (0-100) based on image quality, handwriting legibility, and data completeness
                               * 90-100: Crystal clear image, all text easily readable, complete scorecard data
                               * 70-89: Good quality, most text clear, minor uncertainty in 1-2 elements
@@ -217,7 +239,7 @@ class ImageProcessor:
                         "content": [
                             {
                                 "type": "text",
-                                "text": "Analyze this golf scorecard"
+                                "text": "Perform COMPREHENSIVE extraction of this golf scorecard. Scan every inch of the image systematically. Extract ALL visible data including: player names, scores, hole information, yardages, course details, tournament info, signatures, dates, and any other text or numbers. Don't skip any rows - even those without player names. Include data location context where helpful."
                             },
                             {
                                 "type": "image_url",
