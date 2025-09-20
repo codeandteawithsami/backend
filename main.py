@@ -5,7 +5,7 @@ from upload import router as upload_router, cleanup_temp_files
 app = FastAPI(title="Image Parser API", version="1.0.0")
 
 # Clean up old temp files on startup
-@app.on_event("startup")
+# @app.on_event("startup")
 async def startup_event():
     cleanup_temp_files(max_age_hours=24)
     print("Cleaned up old temporary files on startup")
