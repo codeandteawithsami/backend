@@ -12,10 +12,17 @@ async def startup_event():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",  # Local development
+        "http://localhost:3001",  # Alternative local port
+        "https://frontend-6c9f9n89g-codeandteawithsamis-projects.vercel.app",  # Vercel frontend
+        "https://*.vercel.app",  # All Vercel apps
+        "*"  # Fallback for all origins
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
