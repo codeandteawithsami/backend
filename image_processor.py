@@ -342,7 +342,7 @@ class ImageProcessor:
             self.executor,
             functools.partial(
                 self.client.chat.completions.create,
-                model="gpt-4o",
+                model="gpt-4.1",
                 messages=[
                     {
                         "role": "system",
@@ -376,7 +376,7 @@ class ImageProcessor:
             self.executor,
             functools.partial(
                 self.client.chat.completions.create,
-                model="gpt-4o",
+                model="gpt-4.1",
                 messages=[
                     {
                         "role": "system",
