@@ -3,7 +3,7 @@ import os
 from ultralytics import YOLO
 from PIL import Image
 
-def detect_data(image_path: str, output_dir: str = "outputs", model_path: str = "model/best.pt", conf_thresh: float = 0.5):
+def detect_data(image_path: str, output_dir: str = "outputs", model_path: str = "model/best.pt", conf_thresh: float = 0.85):
     """
     Run YOLO detection, save detection image and crop only the highest confidence object above threshold.
 
