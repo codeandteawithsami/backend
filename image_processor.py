@@ -21,6 +21,153 @@ class ImageProcessor:
         self.cache = {}  # Simple in-memory cache
         self.executor = ThreadPoolExecutor(max_workers=3)  # For parallel processing
     
+    def detect_and_rotate_image(self, image_path: str) -> str:
+        """Detect image orientation using GPT Vision and rotate if necessary"""
+        try:
+            print(f"Detecting orientation for image: {image_path}")
+
+            # First encode the original image
+            with Image.open(image_path) as img:
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+
+                # Resize for orientation detection (smaller image for faster processing)
+                detection_size = (800, 600)  # Increased size for better text recognition
+                img_for_detection = img.copy()
+                img_for_detection.thumbnail(detection_size, Image.Resampling.LANCZOS)
+
+                # Create 4 different rotations for comparison
+                rotations = {
+                    "0": img_for_detection,
+                    "90": img_for_detection.rotate(-90, expand=True),
+                    "180": img_for_detection.rotate(-180, expand=True),
+                    "270": img_for_detection.rotate(-270, expand=True)
+                }
+
+                # Save all rotations and encode them
+                base64_images = {}
+                temp_paths = []
+                for angle, rotated_img in rotations.items():
+                    temp_path = image_path.replace('.', f'_temp_{angle}.')
+                    rotated_img.save(temp_path)
+                    temp_paths.append(temp_path)
+
+                    with open(temp_path, "rb") as image_file:
+                        base64_images[angle] = base64.b64encode(image_file.read()).decode('utf-8')
+
+                # Ask GPT to compare all orientations and pick the best one
+                content_parts = [
+                    {
+                        "type": "text",
+                        "text": """I will show you the same image in 4 different orientations (0°, 90°, 180°, 270°). Your job is to determine which orientation makes the text most readable.
+
+Look for:
+- Headers, titles, course names
+- Player names and signatures
+- Hole numbers (1-18)
+- Par values and scores
+- Any printed or handwritten text
+
+Choose the orientation where ALL text reads naturally from left-to-right, top-to-bottom.
+
+Here are the 4 orientations:
+
+ORIENTATION 0° (original):"""
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_images['0']}"}
+                    },
+                    {
+                        "type": "text",
+                        "text": "ORIENTATION 90° (rotated 90° clockwise):"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_images['90']}"}
+                    },
+                    {
+                        "type": "text",
+                        "text": "ORIENTATION 180° (rotated 180°):"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_images['180']}"}
+                    },
+                    {
+                        "type": "text",
+                        "text": "ORIENTATION 270° (rotated 270° clockwise):"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_images['270']}"}
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which orientation has the most readable text? Respond with ONLY the number: 0, 90, 180, or 270"
+                    }
+                ]
+
+                orientation_response = self.client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are an expert at identifying the correct orientation for reading text in images. Choose the orientation where text is most readable."
+                        },
+                        {
+                            "role": "user",
+                            "content": content_parts
+                        }
+                    ],
+                    max_tokens=5
+                )
+
+                # Clean up temp files
+                for temp_path in temp_paths:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+
+                # Get the best orientation
+                best_orientation = orientation_response.choices[0].message.content.strip()
+                print(f"GPT selected best orientation: {best_orientation} degrees")
+
+                # Additional validation - try to extract just the number
+                import re
+                angle_match = re.search(r'\b(0|90|180|270)\b', best_orientation)
+                if angle_match:
+                    best_orientation = angle_match.group(1)
+                    print(f"Extracted angle from response: {best_orientation}")
+                else:
+                    print(f"Could not extract valid angle from response: '{best_orientation}', defaulting to 0")
+                    best_orientation = "0"
+
+                # Apply rotation if needed (use the original full-resolution image)
+                if best_orientation in ['90', '180', '270']:
+                    angle = int(best_orientation)
+                    print(f"Applying {angle}° rotation to full-resolution image")
+
+                    # Rotate the original full-resolution image
+                    if angle == 90:
+                        rotated_img = img.rotate(-90, expand=True)  # Rotate 90° clockwise
+                    elif angle == 180:
+                        rotated_img = img.rotate(-180, expand=True)  # Rotate 180°
+                    elif angle == 270:
+                        rotated_img = img.rotate(-270, expand=True)  # Rotate 270° clockwise
+
+                    # Save rotated image
+                    rotated_path = image_path.replace('.', '_rotated.')
+                    rotated_img.save(rotated_path, quality=95)
+                    print(f"Image rotated {angle} degrees and saved to: {rotated_path}")
+                    return rotated_path
+                else:
+                    print("No rotation needed - image is already correctly oriented")
+                    return image_path
+
+        except Exception as e:
+            print(f"Error in orientation detection: {str(e)}")
+            return image_path  # Return original path if detection fails
+
     def encode_image(self, image_path: str) -> str:
         """Encode image to base64 string with caching and compression"""
         # Create cache key from file path and modification time
