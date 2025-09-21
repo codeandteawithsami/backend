@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, status
+from fastapi.responses import FileResponse
 import os
 from datetime import datetime
 import shutil
@@ -69,15 +70,27 @@ async def upload_image(file: UploadFile = File(...)):
         # Process image with OpenAI
         processor = ImageProcessor()
         start_time = time.time()
-        
+
         try:
-            processing_result = processor.extract_text_from_image_sync(file_path)
+            # First, detect orientation and rotate if needed
+            rotated_image_path = processor.detect_and_rotate_image(file_path)
+
+            # Process the rotated image
+            processing_result = processor.extract_text_from_image_sync(rotated_image_path)
             processing_time = time.time() - start_time
             
+            # Determine if image was rotated
+            was_rotated = rotated_image_path != file_path
+            rotated_filename = None
+            if was_rotated:
+                rotated_filename = os.path.basename(rotated_image_path)
+
             return {
                 "message": "Image uploaded and processed successfully",
                 "filename": filename,
                 "original_filename": file.filename,
+                "rotated_filename": rotated_filename,
+                "was_rotated": was_rotated,
                 "size": file.size,
                 "upload_time": datetime.now().isoformat(),
                 "processing_time": processing_time,
@@ -124,6 +137,16 @@ async def process_scorecards():
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing scorecards: {str(e)}")
+
+@router.get("/image/{filename}")
+async def get_image(filename: str):
+    """Serve uploaded images for frontend display"""
+    file_path = os.path.join(UPLOAD_DIR, filename)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    return FileResponse(file_path)
 
 @router.get("/download-csv/{filename}")
 async def download_csv(filename: str):
